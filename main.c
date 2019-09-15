@@ -3,13 +3,15 @@
 #include <string.h>
 #include <getopt.h>
 #include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
+#include <mpi.h>
 #include "libs/bitmap.h"
 
 // Convolutional Kernel Examples, each with dimension 3,
 // gaussian kernel with dimension 5
 // If you apply another kernel, remember not only to exchange
 // the kernel but also the kernelFactor and the correct dimension.
-
 int const sobelYKernel[] = {-1, -2, -1,
                              0,  0,  0,
                              1,  2,  1};
@@ -24,7 +26,6 @@ float const sobelXKernelFactor = (float) 1.0;
 int const laplacian1Kernel[] = {  -1,  -4,  -1,
                                  -4,  20,  -4,
                                  -1,  -4,  -1};
-
 float const laplacian1KernelFactor = (float) 1.0;
 
 int const laplacian2Kernel[] = { 0,  1,  0,
@@ -37,9 +38,7 @@ int const laplacian3Kernel[] = { -1,  -1,  -1,
                                   -1,  -1,  -1};
 float const laplacian3KernelFactor = (float) 1.0;
 
-
 //Bonus Kernel:
-
 int const gaussianKernel[] = { 1,  4,  6,  4, 1,
                                4, 16, 24, 16, 4,
                                6, 24, 36, 24, 6,
@@ -48,9 +47,17 @@ int const gaussianKernel[] = { 1,  4,  6,  4, 1,
 
 float const gaussianKernelFactor = (float) 1.0 / 256.0;
 
+// Function to get the wall clock time
+double get_wall_time(){
+    struct timeval time;
+    if (gettimeofday(&time,NULL)){
+        //  Handle error
+        return 0;
+    }
+    return (double)time.tv_sec + (double)time.tv_usec * .000001;
+}
 
 // Helper function to swap bmpImageChannel pointers
-
 void swapImageChannel(bmpImageChannel **one, bmpImageChannel **two) {
   bmpImageChannel *helper = *two;
   *two = *one;
@@ -105,76 +112,91 @@ void help(char const *exec, char const opt, char const *optarg) {
 }
 
 int main(int argc, char **argv) {
-  /*
-    Parameter parsing, don't change this!
-   */
-  unsigned int iterations = 1;
-  char *output = NULL;
-  char *input = NULL;
-  int ret = 0;
+	MPI_Init(NULL, NULL); // MPI Initialization
+	
+	// Get the id of each process and the total amount of processes
+	int my_rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &my_rank);
+	int num_proc;
+	MPI_Comm_size(MPI_COMM_WORLD, &num_proc);
+	
+	// Variable to hold the heigth and width of the original image
+	int image_height; 
+	int image_width;
+	bmpImageChannel *imageChannel = newBmpImageChannel(0, 0);
+ 	
+	  /*
+		Parameter parsing, don't change this!
+	   */
+	  unsigned int iterations = 1;
+	  char *output = NULL;
+	  char *input = NULL;
+	  int ret = 0;
+	
+	  static struct option const long_options[] =  {
+		  {"help",       no_argument,       0, 'h'},
+		  {"iterations", required_argument, 0, 'i'},
+		  {0, 0, 0, 0}
+	  };
 
-  static struct option const long_options[] =  {
-      {"help",       no_argument,       0, 'h'},
-      {"iterations", required_argument, 0, 'i'},
-      {0, 0, 0, 0}
-  };
+	  static char const * short_options = "hi:";
+	  {
+		char *endptr;
+		int c;
+		int option_index = 0;
+		while ((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
+		  switch (c) {
+		  case 'h':
+			help(argv[0],0, NULL);
+			goto graceful_exit;
+		  case 'i':
+			iterations = strtol(optarg, &endptr, 10);
+			if (endptr == optarg) {
+			  help(argv[0], c, optarg);
+			  goto error_exit;
+			}
+			break;
+		  default:
+			abort();
+		  }
+		}
+	  }
 
-  static char const * short_options = "hi:";
-  {
-    char *endptr;
-    int c;
-    int option_index = 0;
-    while ((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
-      switch (c) {
-      case 'h':
-        help(argv[0],0, NULL);
-        goto graceful_exit;
-      case 'i':
-        iterations = strtol(optarg, &endptr, 10);
-        if (endptr == optarg) {
-          help(argv[0], c, optarg);
-          goto error_exit;
-        }
-        break;
-      default:
-        abort();
-      }
-    }
-  }
+	  if (argc <= (optind+1)) {
+		help(argv[0],' ',"Not enough arugments");
+		goto error_exit;
+	  }
+	  input = calloc(strlen(argv[optind]) + 1, sizeof(char));
+	  strncpy(input, argv[optind], strlen(argv[optind]));
+	  optind++;
 
-  if (argc <= (optind+1)) {
-    help(argv[0],' ',"Not enough arugments");
-    goto error_exit;
-  }
-  input = calloc(strlen(argv[optind]) + 1, sizeof(char));
-  strncpy(input, argv[optind], strlen(argv[optind]));
-  optind++;
+	  output = calloc(strlen(argv[optind]) + 1, sizeof(char));
+	  strncpy(output, argv[optind], strlen(argv[optind]));
+	  optind++;
 
-  output = calloc(strlen(argv[optind]) + 1, sizeof(char));
-  strncpy(output, argv[optind], strlen(argv[optind]));
-  optind++;
+	  /*
+		End of Parameter parsing!
+	   */
+	   
+	// Root proceess reads the image
+	if (my_rank == 0) {
+	  /*
+		Create the BMP image and load it from disk.
+	   */
+	  bmpImage *image = newBmpImage(0,0);
+	  if (image == NULL) {
+		fprintf(stderr, "Could not allocate new image!\n");
+	  }
 
-  /*
-    End of Parameter parsing!
-   */
-
-  /*
-    Create the BMP image and load it from disk.
-   */
-  bmpImage *image = newBmpImage(0,0);
-  if (image == NULL) {
-    fprintf(stderr, "Could not allocate new image!\n");
-  }
-
-  if (loadBmpImage(image, input) != 0) {
-    fprintf(stderr, "Could not load bmp image '%s'!\n", input);
-    freeBmpImage(image);
-    goto error_exit;
-  }
-
+	  if (loadBmpImage(image, input) != 0) {
+		fprintf(stderr, "Could not load bmp image '%s'!\n", input);
+		freeBmpImage(image);
+		goto error_exit;
+	  }
 
   // Create a single color channel image. It is easier to work just with one color
-  bmpImageChannel *imageChannel = newBmpImageChannel(image->width, image->height);
+  //bmpImageChannel *imageChannel = newBmpImageChannel(image->width, image->height);
+  imageChannel = newBmpImageChannel(image->width, image->height);
   if (imageChannel == NULL) {
     fprintf(stderr, "Could not allocate new image channel!\n");
     freeBmpImage(image);
@@ -192,12 +214,73 @@ int main(int argc, char **argv) {
     freeBmpImageChannel(imageChannel);
     goto error_exit;
   }
+  
+  image_height = imageChannel->height;
+  image_width = imageChannel->width;
+  }
 
-
+  // Every process knows which is the image height and width
+  MPI_Bcast(&image_height, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  MPI_Bcast(&image_width, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  //MPI_Bcast(&iterations, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  printf("Bcast successful. Iter = %d, W = %d and H = %d\n", iterations, image_width, image_height);
+  
+  // For each process, create a buffer that will hold a subset of the entire image
+	int chunk_height = (image_height / num_proc)  + 3; // New chunk should be bigger (2 extra rows for shared borders and 1 extra row in case the data can't be equally divided)
+	//int chunk_height = (image_height / num_proc); // New chunk should be bigger (2 extra rows for shared borders and 1 extra row in case the data can't be equally divided)
+	int chunk_size = chunk_height * image_width;
+	unsigned char *subset = (unsigned char*) calloc(chunk_size, sizeof(unsigned char));
+    printf("Chunk allocated successful. Chunk H = %d and Size = %d\n", chunk_height, chunk_height * image_width);
+    
+  // Calculate send counts and displacements
+	int *sendcounts = malloc(sizeof(int)*num_proc); // Array describing how many elements to send to each process
+    int *displs = malloc(sizeof(int)*num_proc);     // Array describing the displacements where each segment begins
+    int rem = image_height % num_proc; 				// Rows remaining after division among processes
+    int sum = 0;                					// Sum of counts. Used to calculate displacements
+    
+	for (int i = 0; i < num_proc; i++) {
+		if (i == 0 || i == num_proc - 1){
+			sendcounts[i] = (image_height / num_proc) + 1; // Number of rows per process (1 row extra for bottom and top chunks)
+			}
+		else{
+			sendcounts[i] = (image_height / num_proc) + 2; // Number of rows per process (2 row extra for intermediate chunks)
+		}
+        if (rem > 0) {
+            sendcounts[i] += 1; // If there are remaining rows, distribute them among the processes
+            rem--;
+        }
+		
+		sendcounts[i] = sendcounts[i] * image_width; // Convert rows into image buffer elements
+        displs[i] = sum;
+        sum += sendcounts[i] - 2 * image_width;
+        printf("sendcounts(%d) = %d and displs(%d) = %d\n", i, sendcounts[i], i, displs[i]);
+    }
+   
+	// Scatter image between the processes
+	MPI_Scatterv(imageChannel->data, 	// Data on root process
+				 sendcounts, 			// Array with the number of elements sent to each process
+				 displs, 				// Displacement relative to the image buffer
+				 MPI_UNSIGNED_CHAR, 	// Data type
+				 subset,				// Where to place the scattered data
+				 chunk_size, 			// Number of elements to receive
+				 MPI_UNSIGNED_CHAR,  	// Data type
+				 0, 					// Rank of root process
+				 MPI_COMM_WORLD);		// MPI communicator
+	printf("Process %d scattered succesfully\n", my_rank);
+	
+	// Move the subset to each imageChannel
+	imageChannel->data = &subset;
+	imageChannel->height = sendcounts[my_rank] / image_width;
+	imageChannel->width = image_width;
+	
+	printf("Elements in imageChannel. H = %d and W = %d\n", imageChannel->height, imageChannel->width);
+  
   //Here we do the actual computation!
+  //TODO: Perform computation!!!!!!!!!!!!!!!!!!!!!!!1
   // imageChannel->data is a 2-dimensional array of unsigned char which is accessed row first ([y][x])
+  double t0 = get_wall_time();
   bmpImageChannel *processImageChannel = newBmpImageChannel(imageChannel->width, imageChannel->height);
-  for (unsigned int i = 0; i < iterations; i ++) {
+  /*for (unsigned int i = 0; i < iterations; i ++) {
     applyKernel(processImageChannel->data,
                 imageChannel->data,
                 imageChannel->width,
@@ -210,7 +293,9 @@ int main(int argc, char **argv) {
     swapImageChannel(&processImageChannel, &imageChannel);
   }
   freeBmpImageChannel(processImageChannel);
-
+  double t1 = get_wall_time();
+  printf ("Elapsed time = %f s\n", t1 - t0);
+/*
   // Map our single color image back to a normal BMP image with 3 color channels
   // mapEqual puts the color value on all three channels the same way
   // other mapping functions are mapRed, mapGreen, mapBlue
@@ -221,20 +306,39 @@ int main(int argc, char **argv) {
     goto error_exit;
   }
   freeBmpImageChannel(imageChannel);
+  
+  // Gather here
+  MPI_Gatherv(subset, 			// Data to gather
+				sendcounts[my_rank],// Number of elements of each gathered data
+				MPI_UNSIGNED_CHAR, 	// Data type
+				output_image, 		// Where to place gathered data
+				sendcounts, 		// Number of elements recevied per process
+				displs,				// Displacement relative to the image buffer
+				MPI_UNSIGNED_CHAR,  // Data type
+				0, 					// Rank of root process
+				MPI_COMM_WORLD);	// MPI communicator
+	//printf("Process %d gathered succesfully\n", my_rank);
 
-  //Write the image back to disk
-  if (saveBmpImage(image, output) != 0) {
-    fprintf(stderr, "Could not save output to '%s'!\n", output);
-    freeBmpImage(image);
-    goto error_exit;
-  };
-
+  // Root proceess writes the image back to disk
+  if (my_rank == 0) {
+	  if (saveBmpImage(image, output) != 0) {
+		fprintf(stderr, "Could not save output to '%s'!\n", output);
+		freeBmpImage(image);
+		goto error_exit;
+	  }
+  };*/
+  
 graceful_exit:
   ret = 0;
+  
 error_exit:
   if (input)
     free(input);
   if (output)
     free(output);
+    
+  // Finalize MPI
+  MPI_Barrier(MPI_COMM_WORLD);
+  MPI_Finalize();
   return ret;
 };
