@@ -66,6 +66,7 @@ void swapImageChannel(bmpImageChannel **one, bmpImageChannel **two) {
 
 // Apply convolutional kernel on image data
 void applyKernel(unsigned char **out, unsigned char **in, unsigned int width, unsigned int height, int *kernel, unsigned int kernelDim, float kernelFactor) {
+//void applyKernel(unsigned char **out, unsigned char *in, unsigned int width, unsigned int height, int *kernel, unsigned int kernelDim, float kernelFactor) {
   unsigned int const kernelCenter = (kernelDim / 2);
   for (unsigned int y = 0; y < height; y++) {
     for (unsigned int x = 0; x < width; x++) {
@@ -79,6 +80,7 @@ void applyKernel(unsigned char **out, unsigned char **in, unsigned int width, un
           int xx = x + (kx - kernelCenter);
           if (xx >= 0 && xx < (int) width && yy >=0 && yy < (int) height)
             aggregate += in[yy][xx] * kernel[nky * kernelDim + nkx];
+            //aggregate += in[(yy * width) + xx] * kernel[nky * kernelDim + nkx];
         }
       }
       aggregate *= kernelFactor;
@@ -232,7 +234,7 @@ int main(int argc, char **argv) {
 	unsigned char *subset = (unsigned char*) calloc(chunk_size, sizeof(unsigned char));
     printf("Chunk allocated successful. Chunk H = %d and Size = %d\n", chunk_height, chunk_height * image_width);
     
-  // Calculate send counts and displacements
+  //Calculate send counts and displacements
 	int *sendcounts = malloc(sizeof(int)*num_proc); // Array describing how many elements to send to each process
     int *displs = malloc(sizeof(int)*num_proc);     // Array describing the displacements where each segment begins
     int rem = image_height % num_proc; 				// Rows remaining after division among processes
@@ -269,19 +271,37 @@ int main(int argc, char **argv) {
 	printf("Process %d scattered succesfully\n", my_rank);
 	
 	// Move the subset to each imageChannel
-	imageChannel->data = &subset;
+	
+	//imageChannel->data = &subset; //Need to conver 1D subset array in a 2D array
 	imageChannel->height = sendcounts[my_rank] / image_width;
 	imageChannel->width = image_width;
+	//printf("Sub and add sub, %d and %d\n",subset, &subset);
+	
+	printf("My rank %d and my height %d\n",my_rank, imageChannel->height);
+	unsigned char **subset_2d;
+	subset_2d = calloc(imageChannel->height, sizeof(unsigned char *));
+	for (unsigned int i = 0; i < imageChannel->height; i++) {
+	  subset_2d[i] = calloc(imageChannel->width, sizeof(unsigned char));
+	}
+	
+	for (unsigned int i = 0; i < imageChannel->height; i++) {
+		for (unsigned int j = 0; j < imageChannel->width; j++) {
+			 subset_2d[i][j] = subset[i * imageChannel->height + j];
+		}
+	}
+	printf("2D data is okay :)\n");
+	imageChannel->data = subset_2d; 
 	
 	printf("Elements in imageChannel. H = %d and W = %d\n", imageChannel->height, imageChannel->width);
+	printf("Subset (0) = %d, Data(0)= %d\n",subset[1025],  subset_2d[1][0]);
   
   //Here we do the actual computation!
   //TODO: Perform computation!!!!!!!!!!!!!!!!!!!!!!!1
   // imageChannel->data is a 2-dimensional array of unsigned char which is accessed row first ([y][x])
-  double t0 = get_wall_time();
+  //double t0 = get_wall_time();
   bmpImageChannel *processImageChannel = newBmpImageChannel(imageChannel->width, imageChannel->height);
-  /*for (unsigned int i = 0; i < iterations; i ++) {
-    applyKernel(processImageChannel->data,
+  for (unsigned int i = 0; i < iterations; i ++) {
+	applyKernel(processImageChannel->data,
                 imageChannel->data,
                 imageChannel->width,
                 imageChannel->height,
@@ -290,11 +310,12 @@ int main(int argc, char **argv) {
  //               (int *)laplacian3Kernel, 3, laplacian3KernelFactor
  //               (int *)gaussianKernel, 5, gaussianKernelFactor
                 );
-    swapImageChannel(&processImageChannel, &imageChannel);
+    //swapImageChannel(&processImageChannel, &imageChannel);
   }
   freeBmpImageChannel(processImageChannel);
-  double t1 = get_wall_time();
-  printf ("Elapsed time = %f s\n", t1 - t0);
+  //double t1 = get_wall_time();
+  //printf ("Elapsed time = %f s\n", t1 - t0);
+  printf ("Computation done\n");
 /*
   // Map our single color image back to a normal BMP image with 3 color channels
   // mapEqual puts the color value on all three channels the same way
