@@ -108,53 +108,56 @@ int main(int argc, char **argv) {
   // Variables to hold the dimensions of the original image
   int image_height; 
   int image_width;
+  int image_res;
 	
   // Global image channel and local imageChannel for each process chunk
   bmpImageChannel *imageChannel = newBmpImageChannel(0, 0);
   bmpImageChannel *localImageChannel = newBmpImageChannel(0, 0);
+  
+  unsigned char *data_1D = NULL;
+  unsigned char *localData_1D = NULL;
 	 	
   /*
-  Parameter parsing, don't change this!
-  */
+    Parameter parsing, don't change this!
+   */
   unsigned int iterations = 1;
   char *output = NULL;
   char *input = NULL;
   int ret = 0;
-	
+
   static struct option const long_options[] =  {
-    {"help",       no_argument,       0, 'h'},
-	{"iterations", required_argument, 0, 'i'},
-	{0, 0, 0, 0}
+      {"help",       no_argument,       0, 'h'},
+      {"iterations", required_argument, 0, 'i'},
+      {0, 0, 0, 0}
   };
 
   static char const * short_options = "hi:";
   {
-	char *endptr;
-	int c;
-	int option_index = 0;
-	while ((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
-	  switch (c) {
-	  case 'h':
-		help(argv[0],0, NULL);
-		goto graceful_exit;
-	  case 'i':
-		iterations = strtol(optarg, &endptr, 10);
-		if (endptr == optarg) {
-		  help(argv[0], c, optarg);
-		  goto error_exit;
-		}
-		break;
-	  default:
-		abort();
-	  }
-	}
+    char *endptr;
+    int c;
+    int option_index = 0;
+    while ((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
+      switch (c) {
+      case 'h':
+        help(argv[0],0, NULL);
+        goto graceful_exit;
+      case 'i':
+        iterations = strtol(optarg, &endptr, 10);
+        if (endptr == optarg) {
+          help(argv[0], c, optarg);
+          goto error_exit;
+        }
+        break;
+      default:
+        abort();
+      }
+    }
   }
 
   if (argc <= (optind+1)) {
-  help(argv[0],' ',"Not enough arugments");
-  goto error_exit;
+    help(argv[0],' ',"Not enough arugments");
+    goto error_exit;
   }
-  
   input = calloc(strlen(argv[optind]) + 1, sizeof(char));
   strncpy(input, argv[optind], strlen(argv[optind]));
   optind++;
@@ -162,9 +165,10 @@ int main(int argc, char **argv) {
   output = calloc(strlen(argv[optind]) + 1, sizeof(char));
   strncpy(output, argv[optind], strlen(argv[optind]));
   optind++;
+
   /*
-  End of Parameter parsing!
-  */
+    End of Parameter parsing!
+   */
 	   
   // Root proceess reads the image
   if (my_rank == 0) {
@@ -206,11 +210,20 @@ int main(int argc, char **argv) {
     // Assign values to image dimensions so all processes can know the original image dimensions
     image_height = imageChannel->height;
     image_width  = imageChannel->width;
+    
+    data_1D = (unsigned char*) calloc(image_width * image_height, sizeof(unsigned char));
+	for (unsigned int i = 0; i < image_height; i++) {
+    for (unsigned int j = 0; j < image_width; j++) {
+      data_1D[(i * image_width) + j] = imageChannel->data[i][j];
+      //data_1D[(i * image_width) + j] = 0;
+    }
+  }
   }
 
   // Every process knows now the image dimensions
   MPI_Bcast(&image_height, 1, MPI_INT, 0, MPI_COMM_WORLD);
   MPI_Bcast(&image_width, 1, MPI_INT, 0, MPI_COMM_WORLD);
+  image_res = image_height * image_height;
   //MPI_Bcast(&iterations, 1, MPI_INT, 0, MPI_COMM_WORLD);
   printf("Broadcast successful. Iterations = %d, Image Width = %d and Image Height = %d\n", iterations, image_width, image_height);
   
@@ -241,9 +254,9 @@ int main(int argc, char **argv) {
     sum += sendcounts[i] - 2 * image_width;				// Set displacement for next chunk
     printf("For process %d. Sendcounts(%d) = %d and displs(%d) = %d\n", my_rank, i, sendcounts[i], i, displs[i]);
   }
-   
+  
   // Scatter image between the processes
-  MPI_Scatterv(imageChannel->data, 	// Data on root process
+  MPI_Scatterv(data_1D, 			// Data on root process
 	  		   sendcounts, 			// Array with the number of elements sent to each process
 			   displs, 				// Displacement relative to the image buffer
 			   MPI_UNSIGNED_CHAR, 	// Data type
@@ -253,6 +266,7 @@ int main(int argc, char **argv) {
 			   0, 					// Rank of root process
 			   MPI_COMM_WORLD);		// MPI communicator
    printf("Process %d scattered succesfully\n", my_rank);
+  
 	
   // Convert 1D subset into a 2D subset to use the image kernel
   localImageChannel->height = sendcounts[my_rank] / image_width;
@@ -268,11 +282,13 @@ int main(int argc, char **argv) {
 	
   for (unsigned int i = 0; i < localImageChannel->height; i++) {
     for (unsigned int j = 0; j < localImageChannel->width; j++) {
-      subset_2d[i][j] = subset[i * localImageChannel->height + j];
+      subset_2d[i][j] = subset[(i * localImageChannel->width) + j];
     }
   }
   printf("2D data generated succesfully\n");
   localImageChannel->data = subset_2d; 
+  if (my_rank == 0) {printf("Check if scatter value is fine -- Original = %d\n", imageChannel->data[666][666]);}
+  printf("My rank is %d. Check if scatter value is fine -- Subset = %d\n", my_rank, localImageChannel->data[666][666]);
   
   // Here we do the actual computation!
   // imageChannel->data is a 2-dimensional array of unsigned char which is accessed row first ([y][x])
@@ -316,17 +332,24 @@ int main(int argc, char **argv) {
     processImageChannel = newBmpImageChannel(image_width, image_height);
   }*/
   
+  // Local data in 1D tp feed the gather function
+  localData_1D = (unsigned char*) calloc(localImageChannel->width * localImageChannel->height, sizeof(unsigned char));
+  for (unsigned int i = 0; i < localImageChannel->height; i++) {
+  for (unsigned int j = 0; j < localImageChannel->width; j++) {
+    localData_1D[(i * localImageChannel->width) + j] = localImageChannel->data[i][j];
+    }
+  }
+  
   unsigned char *gathered_buffer = calloc(image_width*image_height, sizeof(unsigned char));
   printf("\n Prior to gather. My rank is %d. Recvcounts = %d. Sendcounts = %d. Displs = %d\n",my_rank, recvcounts[my_rank]/image_width, sendcounts[my_rank]/image_width, displs[my_rank]/image_width);
   // Gather image chunks from the processes
   printf("Local data test %d\n", localImageChannel->data[30][87]);
   //if (my_rank == 0) {printf("Process data test %d\n", processImageChannel->data[0][image_width+1]);}
-  MPI_Gatherv(localImageChannel->data,		// Data to gather
-			  recvcounts[my_rank],			// Number of elements of each gathered data**
+  MPI_Gatherv(localData_1D,					// Data to gather
+			  recvcounts[my_rank],			// Number of elements of each gathered data
 			  MPI_UNSIGNED_CHAR, 			// Data type
-			  //processImageChannel->data, 	// Where to place gathered data
-			  gathered_buffer,
-			  recvcounts, 					// Number of elements received per process**
+			  gathered_buffer,			 	// Where to place gathered data
+			  recvcounts, 					// Number of elements received per process
 		      displs,			  			// Displacement relative to the image buffer
 			  MPI_UNSIGNED_CHAR,			// Data type
 			  0,							// Rank of root process
@@ -342,7 +365,7 @@ int main(int argc, char **argv) {
 	
   for (unsigned int i = 0; i < image_height; i++){
     for (unsigned int j = 0; j < image_width; j++) {
-      gathered_buffer_2d[i][j] = gathered_buffer[i * image_height + j];
+      gathered_buffer_2d[i][j] = gathered_buffer[i * image_width + j];
     }
   }  
   printf("2D data generated succesfully\n");
