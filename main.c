@@ -1,3 +1,5 @@
+// TODO: Fix the kernel calculation, move parameters verification only to root, remove unecesary printf, variables and free memory
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -52,7 +54,7 @@ void swapImageChannel(bmpImageChannel **one, bmpImageChannel **two) {
 // Apply convolutional kernel on image data
 void applyKernel(unsigned char **out, unsigned char **in, unsigned int width, unsigned int height, int *kernel, unsigned int kernelDim, float kernelFactor) {
   unsigned int const kernelCenter = (kernelDim / 2);
-  for (unsigned int y = 0; y < height; y++) {
+  for (unsigned int y = 1; y < height; y++) {
     for (unsigned int x = 0; x < width; x++) {
       int aggregate = 0;
       for (unsigned int ky = 0; ky < kernelDim; ky++) {
@@ -62,8 +64,25 @@ void applyKernel(unsigned char **out, unsigned char **in, unsigned int width, un
 
           int yy = y + (ky - kernelCenter);
           int xx = x + (kx - kernelCenter);
+          
           if (xx >= 0 && xx < (int) width && yy >=0 && yy < (int) height)
             aggregate += in[yy][xx] * kernel[nky * kernelDim + nkx];
+         
+          /*
+          // For the lower block calculation remains the same, there is no problem in cumputing upper row since we don't use it later
+          if (y == 0){
+            if (xx >= 0 && xx < (int) width && yy >=0 && yy < (int) height){
+              aggregate += in[yy][xx] * kernel[nky * kernelDim + nkx];
+		    }
+		  }
+		  
+		   // For the rest of the blocks calculation we don't need to calculate for the extra lower row
+		  else{         
+            if (xx >= 0 && xx < (int) width && yy >=1 && yy < (int) height){
+             aggregate += in[yy][xx] * kernel[nky * kernelDim + nkx];
+		     }
+		  }*/
+		  
         }
       }
       aggregate *= kernelFactor;
@@ -108,15 +127,16 @@ int main(int argc, char **argv) {
   // Variables to hold the dimensions of the original image
   int image_height; 
   int image_width;
-  int image_res;
 	
   // Global image channel and local imageChannel for each process chunk
-  bmpImageChannel *imageChannel = newBmpImageChannel(0, 0);
-  bmpImageChannel *localImageChannel = newBmpImageChannel(0, 0);
+  bmpImageChannel *imageChannel = newBmpImageChannel(0, 0);			// To hold the one channel representation of the whole image 
+  bmpImageChannel *localImageChannel = newBmpImageChannel(0, 0);	// To hold the one channel representation of the image chunk 
   
+  // Variables to hold image data into 1D arrays in order to use the scatter function
   unsigned char *data_1D = NULL;
   unsigned char *localData_1D = NULL;
-	 	
+  
+  // Not sure if this is only for root (need to define iterations and ret for all)	 	
   /*
     Parameter parsing, don't change this!
    */
@@ -165,7 +185,6 @@ int main(int argc, char **argv) {
   output = calloc(strlen(argv[optind]) + 1, sizeof(char));
   strncpy(output, argv[optind], strlen(argv[optind]));
   optind++;
-
   /*
     End of Parameter parsing!
    */
@@ -211,35 +230,34 @@ int main(int argc, char **argv) {
     image_height = imageChannel->height;
     image_width  = imageChannel->width;
     
+    // Place the image in a 1D array so it can be scattered
     data_1D = (unsigned char*) calloc(image_width * image_height, sizeof(unsigned char));
 	for (unsigned int i = 0; i < image_height; i++) {
-    for (unsigned int j = 0; j < image_width; j++) {
-      data_1D[(i * image_width) + j] = imageChannel->data[i][j];
-      //data_1D[(i * image_width) + j] = 0;
+      for (unsigned int j = 0; j < image_width; j++) {
+        data_1D[(i * image_width) + j] = imageChannel->data[i][j];
+      }
     }
-  }
   }
 
   // Every process knows now the image dimensions
   MPI_Bcast(&image_height, 1, MPI_INT, 0, MPI_COMM_WORLD);
   MPI_Bcast(&image_width, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  image_res = image_height * image_height;
   //MPI_Bcast(&iterations, 1, MPI_INT, 0, MPI_COMM_WORLD);
   printf("Broadcast successful. Iterations = %d, Image Width = %d and Image Height = %d\n", iterations, image_width, image_height);
   
   // For each process, create a buffer that will hold a subset of the original image
-  int chunk_height = (image_height / num_proc)  + 3; // 2 extra rows for shared borders and 1 extra row in case the data can't be equally divided
+  int chunk_height = (image_height / num_proc)  + 3; 	// Allocate 2 extra rows for shared borders and 1 extra row in case the data can't be equally divided
   int chunk_size = chunk_height * image_width;
   unsigned char *subset = (unsigned char*) calloc(chunk_size, sizeof(unsigned char));
   printf("Chunk allocated successfully. Height = %d and Size = %d\n", chunk_height, chunk_height * image_width);
     
-  // Calculate send counts and displacements to scatter
+  // Calculate number of elements and displacements to scatter
   int *sendcounts = malloc(sizeof(int)*num_proc);		// Array describing how many elements to send to each process
   int *displs = malloc(sizeof(int)*num_proc);    	 	// Array describing the displacements where each segment begins
   int rem = image_height % num_proc; 					// Rows remaining after division among processes
   int sum = 0;                							// Sum of counts. Used to calculate displacements
   for (int i = 0; i < num_proc; i++) {
-	if (i == 0 || i == num_proc - 1){
+	if (i == 0 || i == (num_proc - 1)){
 	  sendcounts[i] = (image_height / num_proc) + 1; 	// Number of rows per process (1 row extra for bottom and top chunks)
 	  }
 	else{
@@ -249,7 +267,7 @@ int main(int argc, char **argv) {
       sendcounts[i] += 1; 								// If there are remaining rows, distribute them among the processes
       rem--;
     }	
-	sendcounts[i] = sendcounts[i] * image_width; 		// Convert rows into image buffer elements
+	sendcounts[i] *= image_width; 						// Convert rows into image buffer elements
     displs[i] = sum;	
     sum += sendcounts[i] - 2 * image_width;				// Set displacement for next chunk
     printf("For process %d. Sendcounts(%d) = %d and displs(%d) = %d\n", my_rank, i, sendcounts[i], i, displs[i]);
@@ -271,11 +289,9 @@ int main(int argc, char **argv) {
   // Convert 1D subset into a 2D subset to use the image kernel
   localImageChannel->height = sendcounts[my_rank] / image_width;
   localImageChannel->width = image_width;
-  printf("My rank %d and my height %d\n",my_rank, localImageChannel->height);
+  printf("Local data: My rank %d and my height %d\n",my_rank, localImageChannel->height);
 
-  unsigned char **subset_2d;
-  subset_2d = calloc(localImageChannel->height, sizeof(unsigned char *));
-	
+  unsigned char **subset_2d = calloc(localImageChannel->height, sizeof(unsigned char *));
   for (unsigned int i = 0; i < localImageChannel->height; i++) {
     subset_2d[i] = calloc(localImageChannel->width, sizeof(unsigned char));
   }
@@ -287,8 +303,8 @@ int main(int argc, char **argv) {
   }
   printf("2D data generated succesfully\n");
   localImageChannel->data = subset_2d; 
-  if (my_rank == 0) {printf("Check if scatter value is fine -- Original = %d\n", imageChannel->data[666][666]);}
-  printf("My rank is %d. Check if scatter value is fine -- Subset = %d\n", my_rank, localImageChannel->data[666][666]);
+  //if (my_rank == 0) {printf("Check if scatter value is fine -- Original = %d\n", imageChannel->data[1023][512]);}
+  //printf("My rank is %d. Check if scatter value is fine -- Subset = %d\n", my_rank, localImageChannel->data[1023][512]);
   
   // Here we do the actual computation!
   // imageChannel->data is a 2-dimensional array of unsigned char which is accessed row first ([y][x])
@@ -316,23 +332,17 @@ int main(int argc, char **argv) {
 	  displs[i] += image_width; 						// Revert displacement of lower halo
 	}
 	if ( i == 0 || i == num_proc - 1){
-	  //sendcounts[i] -= image_width; 					// Send one row less for first and last chunk
 	  recvcounts[i] = sendcounts[i] - image_width; 		// Send one row less for first and last chunk
 	}
-	else{
-	  //sendcounts[i] -= 2*image_width; 	
+	else{	
 	  recvcounts[i] = sendcounts[i] - 2*image_width;	// Send two rows less for intermediate chunks
 	}
   }
   
   // Processed image channel to use gather function
-  //bmpImageChannel *processImageChannel = newBmpImageChannel(0, 0);
   bmpImageChannel *processImageChannel = newBmpImageChannel(image_width, image_height);
-  /*if (my_rank == 0) {
-    processImageChannel = newBmpImageChannel(image_width, image_height);
-  }*/
   
-  // Local data in 1D tp feed the gather function
+  // Local data in 1D to feed the gather function
   localData_1D = (unsigned char*) calloc(localImageChannel->width * localImageChannel->height, sizeof(unsigned char));
   for (unsigned int i = 0; i < localImageChannel->height; i++) {
   for (unsigned int j = 0; j < localImageChannel->width; j++) {
@@ -340,11 +350,11 @@ int main(int argc, char **argv) {
     }
   }
   
+  // Buffer to place the gathered image data
   unsigned char *gathered_buffer = calloc(image_width*image_height, sizeof(unsigned char));
   printf("\n Prior to gather. My rank is %d. Recvcounts = %d. Sendcounts = %d. Displs = %d\n",my_rank, recvcounts[my_rank]/image_width, sendcounts[my_rank]/image_width, displs[my_rank]/image_width);
+  
   // Gather image chunks from the processes
-  printf("Local data test %d\n", localImageChannel->data[30][87]);
-  //if (my_rank == 0) {printf("Process data test %d\n", processImageChannel->data[0][image_width+1]);}
   MPI_Gatherv(localData_1D,					// Data to gather
 			  recvcounts[my_rank],			// Number of elements of each gathered data
 			  MPI_UNSIGNED_CHAR, 			// Data type
@@ -355,7 +365,8 @@ int main(int argc, char **argv) {
 			  0,							// Rank of root process
 			  MPI_COMM_WORLD);				// MPI communicator
   printf("Process %d gathered succesfully\n", my_rank);
-	
+
+  // Transform gathered data into a 2D array
   unsigned char **gathered_buffer_2d;
   gathered_buffer_2d = calloc(image_height, sizeof(unsigned char *));
 	
@@ -370,12 +381,11 @@ int main(int argc, char **argv) {
   }  
   printf("2D data generated succesfully\n");
   processImageChannel->data = gathered_buffer_2d; 
-  
-   //if (my_rank == 0) {printf("Process data test %d\n", processImageChannel->data[0][image_width+5]);}
 
-	free(recvcounts);
-	free(sendcounts);
-	free(displs);
+  // Cleanup
+  free(recvcounts);
+  free(sendcounts);
+  free(displs);
 
   // Root proceess writes the image back to disk
   if (my_rank == 0) {
@@ -383,8 +393,6 @@ int main(int argc, char **argv) {
     // mapEqual puts the color value on all three channels the same way
     // other mapping functions are mapRed, mapGreen, mapBlue
     bmpImage *image = newBmpImage(image_width,image_height);
-    printf("Image dimemnsions. H = %d. W = %d\n",image->height, image->width); 
-    printf("Processes dimemnsions. H = %d. W = %d\n",processImageChannel->height, processImageChannel->width); 
     
     if (mapImageChannel(image, processImageChannel, mapEqual) != 0) {
       fprintf(stderr, "Could not map image channel!\n");
