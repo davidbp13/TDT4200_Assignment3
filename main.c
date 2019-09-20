@@ -1,4 +1,4 @@
-// TODO: Fix the kernel calculation, move parameters verification only to root, remove unecesary printf, variables and free memory
+// TODO: Logic (what does only root do?) and fix the kernel calculation (send same for all chunks?). One last check.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -159,12 +159,16 @@ int main(int argc, char **argv) {
     while ((c = getopt_long(argc, argv, short_options, long_options, &option_index)) != -1) {
       switch (c) {
       case 'h':
-        help(argv[0],0, NULL);
+        if (my_rank == 0){
+          help(argv[0],0, NULL);
+	    }
         goto graceful_exit;
       case 'i':
         iterations = strtol(optarg, &endptr, 10);
         if (endptr == optarg) {
-          help(argv[0], c, optarg);
+		  if (my_rank == 0){
+            help(argv[0], c, optarg);
+          }
           goto error_exit;
         }
         break;
@@ -175,9 +179,12 @@ int main(int argc, char **argv) {
   }
 
   if (argc <= (optind+1)) {
-    help(argv[0],' ',"Not enough arugments");
+	if (my_rank == 0){
+      help(argv[0],' ',"Not enough arugments");
+    }
     goto error_exit;
   }
+  
   input = calloc(strlen(argv[optind]) + 1, sizeof(char));
   strncpy(input, argv[optind], strlen(argv[optind]));
   optind++;
@@ -238,18 +245,18 @@ int main(int argc, char **argv) {
       }
     }
   }
+  freeBmpImageChannel(imageChannel);
 
   // Every process knows now the image dimensions
   MPI_Bcast(&image_height, 1, MPI_INT, 0, MPI_COMM_WORLD);
   MPI_Bcast(&image_width, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  //MPI_Bcast(&iterations, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  printf("Broadcast successful. Iterations = %d, Image Width = %d and Image Height = %d\n", iterations, image_width, image_height);
+  if (my_rank == 0){printf("Root: broadcast successful. Image Width = %d and Image Height = %d\n", image_width, image_height);}
   
   // For each process, create a buffer that will hold a subset of the original image
   int chunk_height = (image_height / num_proc)  + 3; 	// Allocate 2 extra rows for shared borders and 1 extra row in case the data can't be equally divided
   int chunk_size = chunk_height * image_width;
   unsigned char *subset = (unsigned char*) calloc(chunk_size, sizeof(unsigned char));
-  printf("Chunk allocated successfully. Height = %d and Size = %d\n", chunk_height, chunk_height * image_width);
+  printf("My rank %d. Image chunk allocated successfully of height = %d\n", my_rank, chunk_height);
     
   // Calculate number of elements and displacements to scatter
   int *sendcounts = malloc(sizeof(int)*num_proc);		// Array describing how many elements to send to each process
@@ -270,8 +277,8 @@ int main(int argc, char **argv) {
 	sendcounts[i] *= image_width; 						// Convert rows into image buffer elements
     displs[i] = sum;	
     sum += sendcounts[i] - 2 * image_width;				// Set displacement for next chunk
-    printf("For process %d. Sendcounts(%d) = %d and displs(%d) = %d\n", my_rank, i, sendcounts[i], i, displs[i]);
   }
+  printf("My rank %d. Number of elements to recieve from root = %d and shift from original image = %d\n", my_rank, sendcounts[my_rank]/image_width, displs[my_rank]/image_width);
   
   // Scatter image between the processes
   MPI_Scatterv(data_1D, 			// Data on root process
@@ -283,13 +290,13 @@ int main(int argc, char **argv) {
 			   MPI_UNSIGNED_CHAR,  	// Data type
 			   0, 					// Rank of root process
 			   MPI_COMM_WORLD);		// MPI communicator
-   printf("Process %d scattered succesfully\n", my_rank);
+   if (my_rank == 0){printf("Root: scatter succesfull\n");}
+   free(data_1D);
   
 	
   // Convert 1D subset into a 2D subset to use the image kernel
   localImageChannel->height = sendcounts[my_rank] / image_width;
   localImageChannel->width = image_width;
-  printf("Local data: My rank %d and my height %d\n",my_rank, localImageChannel->height);
 
   unsigned char **subset_2d = calloc(localImageChannel->height, sizeof(unsigned char *));
   for (unsigned int i = 0; i < localImageChannel->height; i++) {
@@ -301,10 +308,8 @@ int main(int argc, char **argv) {
       subset_2d[i][j] = subset[(i * localImageChannel->width) + j];
     }
   }
-  printf("2D data generated succesfully\n");
   localImageChannel->data = subset_2d; 
-  //if (my_rank == 0) {printf("Check if scatter value is fine -- Original = %d\n", imageChannel->data[1023][512]);}
-  //printf("My rank is %d. Check if scatter value is fine -- Subset = %d\n", my_rank, localImageChannel->data[1023][512]);
+  free(subset);
   
   // Here we do the actual computation!
   // imageChannel->data is a 2-dimensional array of unsigned char which is accessed row first ([y][x])
@@ -322,9 +327,7 @@ int main(int argc, char **argv) {
     swapImageChannel(&localProcessImageChannel, &localImageChannel);
   }
   freeBmpImageChannel(localProcessImageChannel);
-  printf ("Computation done on node %d\n",my_rank);
   
-  printf("\n Prior to readjust. My rank is %d. Sendcounts = %d. Displs = %d\n",my_rank, sendcounts[my_rank]/image_width, displs[my_rank]/image_width);
   // Readjust displacements and sendcounts to gather properly
   int *recvcounts = malloc(sizeof(int)*num_proc);		// Array describing how many elements are received from each process
   for (int i = 0; i < num_proc; i++) {
@@ -349,10 +352,15 @@ int main(int argc, char **argv) {
     localData_1D[(i * localImageChannel->width) + j] = localImageChannel->data[i][j];
     }
   }
+  localImageChannel->data = NULL; 
+  free(subset_2d);  
   
   // Buffer to place the gathered image data
-  unsigned char *gathered_buffer = calloc(image_width*image_height, sizeof(unsigned char));
-  printf("\n Prior to gather. My rank is %d. Recvcounts = %d. Sendcounts = %d. Displs = %d\n",my_rank, recvcounts[my_rank]/image_width, sendcounts[my_rank]/image_width, displs[my_rank]/image_width);
+  unsigned char *gathered_buffer = NULL;
+  if (my_rank == 0) {
+    gathered_buffer = calloc(image_width*image_height, sizeof(unsigned char));
+  }
+  printf("My rank %d. Number of elements to send to root = %d and shift in final image = %d\n", my_rank, recvcounts[my_rank]/image_width, displs[my_rank]/image_width);
   
   // Gather image chunks from the processes
   MPI_Gatherv(localData_1D,					// Data to gather
@@ -364,31 +372,29 @@ int main(int argc, char **argv) {
 			  MPI_UNSIGNED_CHAR,			// Data type
 			  0,							// Rank of root process
 			  MPI_COMM_WORLD);				// MPI communicator
-  printf("Process %d gathered succesfully\n", my_rank);
-
-  // Transform gathered data into a 2D array
-  unsigned char **gathered_buffer_2d;
-  gathered_buffer_2d = calloc(image_height, sizeof(unsigned char *));
-	
-  for (unsigned int i = 0; i < image_height; i++) {
-    gathered_buffer_2d[i] = calloc(image_width, sizeof(unsigned char));
-  }
-	
-  for (unsigned int i = 0; i < image_height; i++){
-    for (unsigned int j = 0; j < image_width; j++) {
-      gathered_buffer_2d[i][j] = gathered_buffer[i * image_width + j];
-    }
-  }  
-  printf("2D data generated succesfully\n");
-  processImageChannel->data = gathered_buffer_2d; 
-
-  // Cleanup
-  free(recvcounts);
+  if (my_rank == 0){printf("Root: gather succesfull\n");}
+  free(localData_1D);
   free(sendcounts);
+  free(recvcounts);
   free(displs);
 
-  // Root proceess writes the image back to disk
-  if (my_rank == 0) {
+  if (my_rank == 0){
+    // Transform gathered data into a 2D array
+    unsigned char **gathered_buffer_2d = calloc(image_height, sizeof(unsigned char *));
+	
+    for (unsigned int i = 0; i < image_height; i++) {
+      gathered_buffer_2d[i] = calloc(image_width, sizeof(unsigned char));
+    }
+	
+    for (unsigned int i = 0; i < image_height; i++){
+      for (unsigned int j = 0; j < image_width; j++) {
+        gathered_buffer_2d[i][j] = gathered_buffer[i * image_width + j];
+      }
+    }  
+    free(gathered_buffer);
+    processImageChannel->data = gathered_buffer_2d; 
+
+    // Root proceess writes the image back to disk
     // Map our single color image back to a normal BMP image with 3 color channels
     // mapEqual puts the color value on all three channels the same way
     // other mapping functions are mapRed, mapGreen, mapBlue
@@ -407,6 +413,7 @@ int main(int argc, char **argv) {
 	  freeBmpImage(image);
 	  goto error_exit;
     }
+    processImageChannel->data = NULL;
   }
   
 graceful_exit:

@@ -18,7 +18,7 @@ void freeBmpData(bmpImage *image) {
 		free(image->data);
 		image->data = NULL;
 	}
-}
+} 
 
 
 void freeBmpImage(bmpImage *image) {
