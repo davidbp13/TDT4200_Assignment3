@@ -1,5 +1,3 @@
-// TODO: Fix the kernel calculation, variables
-
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -52,9 +50,18 @@ void swapImageChannel(bmpImageChannel **one, bmpImageChannel **two) {
 }
 
 // Apply convolutional kernel on image data
-void applyKernel(unsigned char **out, unsigned char **in, unsigned int width, unsigned int height, int *kernel, unsigned int kernelDim, float kernelFactor) {
+void applyKernel(int rank, int num_proc, unsigned char **out, unsigned char **in, unsigned int width, unsigned int height, int *kernel, unsigned int kernelDim, float kernelFactor) {
+  int lowerLimit = 1; 			// For the middle and upper chunks, the first row calculation is ignored
+  int upperLimit = height - 1; 	// For the middle and lower chunks, the last row calculation is ignored
+  if (rank == 0){
+    lowerLimit = 0;   			// For the lower chunk only the first row calculation is performed
+  }
+  if (rank == num_proc - 1){
+    upperLimit = height; 		// For the upper chunk only the first row calculation is performed
+  }
+
   unsigned int const kernelCenter = (kernelDim / 2);
-  for (unsigned int y = 1; y < height; y++) {
+  for (unsigned int y = lowerLimit; y < upperLimit; y++) {
 	for (unsigned int x = 0; x < width; x++) {
 	  int aggregate = 0;
 	  for (unsigned int ky = 0; ky < kernelDim; ky++) {
@@ -211,11 +218,7 @@ int main(int argc, char **argv) {
   // Every process knows now the image dimensions
   MPI_Bcast(&image_height, 1, MPI_INT, 0, MPI_COMM_WORLD);
   MPI_Bcast(&image_width, 1, MPI_INT, 0, MPI_COMM_WORLD);
-  
-  // For each process, create a buffer that will hold a subset of the original image
-  int chunk_height = (image_height / num_proc)  + 3; 	// Allocate 2 extra rows for shared borders and 1 extra row in case the data can't be equally divided
-  int chunk_size = chunk_height * image_width;
-	
+  	
   // Calculate number of elements and displacements to scatter
   int *sendcounts = malloc(sizeof(int)*num_proc);		// Array describing how many elements to send to each process
   int *displs = malloc(sizeof(int)*num_proc);    	 	// Array describing the displacements where each segment begins
@@ -237,7 +240,8 @@ int main(int argc, char **argv) {
 	sum += sendcounts[i] - 2 * image_width;				// Set displacement for next chunk
   }
   
-  // bmpImageChannel to hold image chunk for each process
+  // For each process, create a localImageChannel that will hold a subset of the original image
+  int chunk_height = sendcounts[my_rank] / image_width;
   bmpImageChannel *localImageChannel = newBmpImageChannel(image_width, chunk_height);
   
   // Scatter image between the processes
@@ -246,7 +250,7 @@ int main(int argc, char **argv) {
 			   displs, 							// Displacement relative to the image buffer
 			   MPI_UNSIGNED_CHAR, 				// Data type
 			   localImageChannel->rawdata,		// Where to place the scattered data
-			   chunk_size, 						// Number of elements to receive
+			   sendcounts[my_rank], 			// Number of elements to receive
 			   MPI_UNSIGNED_CHAR,  				// Data type
 			   0, 								// Rank of root process
 			   MPI_COMM_WORLD);					// MPI communicator
@@ -256,7 +260,9 @@ int main(int argc, char **argv) {
   // imageChannel->data is a 2-dimensional array of unsigned char which is accessed row first ([y][x])
   bmpImageChannel *localProcessImageChannel = newBmpImageChannel(localImageChannel->width, localImageChannel->height);
   for (unsigned int i = 0; i < iterations; i ++) {
-	applyKernel(localProcessImageChannel->data,
+	applyKernel(my_rank,
+				num_proc,
+				localProcessImageChannel->data,
 				localImageChannel->data,
 				localImageChannel->width,
 				localImageChannel->height,
@@ -282,7 +288,6 @@ int main(int argc, char **argv) {
 	  sendcounts[i] -= 2*image_width;		// Send two rows less for intermediate chunks
 	}
   }
-
   // Gather image chunks from the processes
   MPI_Gatherv(localImageChannel->rawdata,	// Data to gather
 			  sendcounts[my_rank],			// Number of elements of each gathered data
