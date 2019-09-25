@@ -125,7 +125,7 @@ int main(int argc, char **argv) {
 	}
 		
   // bmpImageChannelto hold the black and white image representation
-  bmpImageChannel *imageChannel = newBmpImageChannel(0, 0);			// To hold the one channel representation of the whole image
+  bmpImageChannel *imageChannel = newBmpImageChannel(0, 0);	
    	
   /*
 	Parameter parsing, don't change this!
@@ -254,7 +254,6 @@ int main(int argc, char **argv) {
 			   MPI_UNSIGNED_CHAR,  				// Data type
 			   0, 								// Rank of root process
 			   MPI_COMM_WORLD);					// MPI communicator
-   //printf("Process %d scattered succesfully\n", my_rank);
    
   // Here we do the actual computation!
   // imageChannel->data is a 2-dimensional array of unsigned char which is accessed row first ([y][x])
@@ -272,9 +271,52 @@ int main(int argc, char **argv) {
  //               (int *)gaussianKernel, 5, gaussianKernelFactor
 				);
 	swapImageChannel(&localProcessImageChannel, &localImageChannel);
+	
+	// Send halos between processes
+	// Send upper halo
+	if (my_rank != num_proc - 1){
+	  MPI_Send(localImageChannel->rawdata + ((localImageChannel->width * localImageChannel->height) - (2 * image_width)),	// Initial address of send buffer (choice) 
+		       image_width, 																								// Number of elements in send buffer (integer)
+			   MPI_UNSIGNED_CHAR,																							// Type of elements in send buffer (handle)
+               my_rank + 1,																									// Rank of destination (integer)
+               0,																											// Send tag (integer)
+               MPI_COMM_WORLD);																								// Communicator (handle)
+    }
+    
+    // Receive upper halo from lower neighbor
+    if (my_rank != 0){
+	  MPI_Recv(localImageChannel->rawdata,	// Initial address of receive buffer (choice)
+		       image_width, 				// Number of elements in receive buffer (integer)
+			   MPI_UNSIGNED_CHAR,			// Type of elements in receive buffer (handle)
+               my_rank - 1,					// Rank of source (integer)
+               0,							// Receive tag (integer)
+               MPI_COMM_WORLD,				// Communicator (handle)
+               MPI_STATUS_IGNORE);			// Status object (Status). This refers to the receive operation.
+    }
+    
+    // Send lower halo
+	if (my_rank != 0){
+	  MPI_Send(localImageChannel->rawdata + image_width,	// Initial address of send buffer (choice) 
+		       image_width, 								// Number of elements in send buffer (integer)
+			   MPI_UNSIGNED_CHAR,							// Type of elements in send buffer (handle)
+               my_rank - 1,									// Rank of destination (integer)
+               0,											// Send tag (integer)
+               MPI_COMM_WORLD);								// Communicator (handle)
+    }
+    
+    // Receive lower halo from upper neighbor
+    if (my_rank != num_proc - 1){
+	  MPI_Recv(localImageChannel->rawdata + ((localImageChannel->width * localImageChannel->height) - (1 * image_width)),	// Initial address of receive buffer (choice)
+		       image_width, 																								// Number of elements in receive buffer (integer)
+			   MPI_UNSIGNED_CHAR,																							// Type of elements in receive buffer (handle)
+               my_rank + 1,																									// Rank of source (integer)
+               0,																											// Receive tag (integer)
+               MPI_COMM_WORLD,																								// Communicator (handle)
+               MPI_STATUS_IGNORE);																							// Status object (Status). This refers to the receive operation.
+    }
+    
   }
   freeBmpImageChannel(localProcessImageChannel);
-  //printf ("Computation done on node %d\n",my_rank);
   
   // Readjust displacements and sendcounts to gather properly
   for (int i = 0; i < num_proc; i++) {
@@ -298,7 +340,6 @@ int main(int argc, char **argv) {
 			  MPI_UNSIGNED_CHAR,			// Data type
 			  0,							// Rank of root process
 			  MPI_COMM_WORLD);				// MPI communicator
-  //printf("Process %d gathered succesfully\n", my_rank);
 
   // Cleanup
   free(sendcounts);
