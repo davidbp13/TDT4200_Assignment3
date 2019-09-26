@@ -39,7 +39,6 @@ int const gaussianKernel[] = {1,  4,  6,  4, 1,
 							  6, 24, 36, 24, 6,
 							  4, 16, 24, 16, 4,
 							  1,  4,  6,  4, 1 };
-
 float const gaussianKernelFactor = (float) 1.0 / 256.0;
 
 // Helper function to swap bmpImageChannel pointers
@@ -282,7 +281,6 @@ int main(int argc, char **argv) {
                0,																											// Send tag (integer)
                MPI_COMM_WORLD);																								// Communicator (handle)
     }
-    
     // Receive upper halo from lower neighbor
     if (my_rank != 0){
 	  MPI_Recv(localImageChannel->rawdata,	// Initial address of receive buffer (choice)
@@ -293,7 +291,6 @@ int main(int argc, char **argv) {
                MPI_COMM_WORLD,				// Communicator (handle)
                MPI_STATUS_IGNORE);			// Status object (Status). This refers to the receive operation.
     }
-    
     // Send lower halo
 	if (my_rank != 0){
 	  MPI_Send(localImageChannel->rawdata + image_width,	// Initial address of send buffer (choice) 
@@ -303,7 +300,6 @@ int main(int argc, char **argv) {
                0,											// Send tag (integer)
                MPI_COMM_WORLD);								// Communicator (handle)
     }
-    
     // Receive lower halo from upper neighbor
     if (my_rank != num_proc - 1){
 	  MPI_Recv(localImageChannel->rawdata + ((localImageChannel->width * localImageChannel->height) - (1 * image_width)),	// Initial address of receive buffer (choice)
@@ -317,19 +313,7 @@ int main(int argc, char **argv) {
     
   }
   freeBmpImageChannel(localProcessImageChannel);
-  
-  // Readjust displacements and sendcounts to gather properly
-  for (int i = 0; i < num_proc; i++) {
-	if ( displs[i] != 0 ){
-	  displs[i] += image_width; 			// Revert displacement of lower halo
-	}
-	if ( i == 0 || i == num_proc - 1){
-	  sendcounts[i] -= image_width; 		// Send one row less for first and last chunk
-	}
-	else{	
-	  sendcounts[i] -= 2*image_width;		// Send two rows less for intermediate chunks
-	}
-  }
+
   // Gather image chunks from the processes
   MPI_Gatherv(localImageChannel->rawdata,	// Data to gather
 			  sendcounts[my_rank],			// Number of elements of each gathered data
@@ -344,7 +328,7 @@ int main(int argc, char **argv) {
   // Cleanup
   free(sendcounts);
   free(displs);
-
+ 
   // Root proceess writes the image back to disk
   if (my_rank == 0) {
 	// Map our single color image back to a normal BMP image with 3 color channels
@@ -366,14 +350,14 @@ int main(int argc, char **argv) {
 	freeBmpImage(image);
   }
   
-graceful_exit:
-  ret = 0;
+  graceful_exit:
+    ret = 0;
   
-error_exit:
-  if (input)
-	free(input);
-  if (output)
-	free(output);
+  error_exit:
+    if (input)
+	  free(input);
+    if (output)
+	  free(output);
 	
   // Finalize MPI
   MPI_Barrier(MPI_COMM_WORLD);
